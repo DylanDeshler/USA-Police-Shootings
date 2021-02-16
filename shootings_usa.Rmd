@@ -1,0 +1,133 @@
+---
+title: "Data on Police Shootings in the United States"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r echo = FALSE, message = FALSE}
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+
+# import data
+# Import the data set
+shootings <- read.csv("~/Downloads/shootings.csv", stringsAsFactors=TRUE)
+population <- read.csv("~/Downloads/nst-est2019-alldata.csv")
+states <- read.csv("~/Library/Mobile Documents/com~apple~Numbers/Documents/states.csv")
+
+# Input data from 2019 US Census Bureau
+p_race <- c(0.059, 0.134, 0.185, 0.013, 0.008, 0.601)
+
+# Cleaning
+shootings$date <- as.Date(shootings$date)
+shootings$name <- as.character(shootings$name)
+population$AVG <- (population$POPESTIMATE2019 + population$POPESTIMATE2016)/2
+
+# Get year of shooting from date and add to shootings data frame
+year <- as.integer(substr(shootings$date, 0, 4))
+shootings <- cbind(shootings, year)
+
+# Remove 2020 data as incomplete
+shootings <- shootings[shootings$year != 2020,]
+shootings_by_year <- data.frame(count(shootings, year))
+shootings_by_race <- data.frame(count(shootings, race))
+
+# Shooting frequency by year and race
+#shootings %>% group_by(year, race) %>% summarize(Freq = n())
+```
+
+```{r echo = FALSE}
+# Plot race by shootings
+ggplot(data = shootings, aes(x = race)) +
+  geom_bar(aes(y = (..count..)/sum(..count..), fill = race)) + 
+  labs(x = "Race", y = "Probability", title = "Police Shootings by Race") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Plot yearly shootings
+ggplot(data = shootings_by_year) +
+  geom_line(aes(x = year, y = n), size = 1.5) +
+  labs(x = "Year", y = "Deaths", title = "Deaths from Police Shootings 2015 - 2019") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Use 2019 data to calculate P(shot)
+p_shot <- sum(shootings_by_year$n) / population$AVG[population$NAME == "United States"]
+
+# use baye's law to calculate P(shot | race) = P(race | shot) * P(shot) / P(race)
+p_race_given_shot <- data.frame(shootings_by_race[1], p = shootings_by_race[,2] / length(shootings$race))
+p_shot_given_race <- data.frame(shootings_by_race[1], p = p_race_given_shot[,2] * p_shot / p_race)
+
+# Plot P(shot | race)
+ggplot(data = p_shot_given_race) +
+  geom_bar(aes(x = race, y = p, fill = race), stat = "identity") + 
+  labs(x = "Race", y = "Probability", title = "Probability of Being Shot Given Race") +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+
+
+```{r echo = FALSE}
+# z-test for difference in proportions
+n_black <- shootings_by_race$n[shootings_by_race$race == "Black"]
+n_white <- shootings_by_race$n[shootings_by_race$race == "White"]
+p_black <- p_shot_given_race$p[p_shot_given_race$race == "Black"]
+p_white <- p_shot_given_race$p[p_shot_given_race$race == "White"]
+p_pool <- (p_black*n_black + p_white*n_white)/(n_black + n_white)
+z_stat <- (p_black - p_white)/sqrt(p_pool*(1-p_pool)*(1/n_black + 1/n_white))
+pnorm(z_stat) # SE is too large, more data needed
+```
+
+
+
+```{r echo = FALSE}
+# Plot P(race | shot) by gender
+ggplot(data = shootings) +
+  geom_bar(aes(x = race, y = (..count..)/sum(..count..), fill = race)) +
+  facet_wrap(~gender) +
+  labs(x = "Race", y = "Percentage of Victims", title = "Frequency of Shooting Victims by Race and Gender") + 
+  theme(plot.title = element_text(hjust = 0.5))
+
+# P(weapon | shot)
+df <- shootings %>% group_by(armed) %>% summarize(count = n()) %>% top_n(n = 8, wt = count)
+df$armed <- factor(df$armed)
+ggplot(df) +
+  geom_col(aes(x = armed, y = count/sum(count), fill = armed)) +
+  labs(x = "Weapon", y = "Percentage", title = "Top 8 Most Frequent Weapons Held by Shooting Victims") + 
+  theme(plot.title = element_text(hjust = 0.5))
+
+# To-Do: Investigate age, city, state, and body camera
+ggplot(data = shootings) +
+  geom_histogram(aes(x = age), binwidth = 3) +
+  labs(x = "Age", y = "Frequency", title = "Histogram of Shooting by Age") + 
+  theme(plot.title = element_text(hjust = 0.5))
+
+df <- shootings %>% group_by(state) %>% summarize(count = n())
+states <- states[order(states$ST),]
+
+names <- population$NAME[6:(6 + 52 - 1)]
+k <- 1
+link_table <- data.frame(STATE = character(), STATE_ROW = integer(), POPULATION_ROW = integer(), AVG = integer())
+for(i in 1:length(names)) {
+  for(j in 1:nrow(states)) {
+    if(names[i] == states$State[j]) {
+      link_table[k,] <- c(states$ST[j], j, (6 + i - 1), population$AVG[6 + i - 1])
+      k <- k + 1
+    }
+  }
+}
+
+link_table <- link_table[order(link_table$STATE),]
+#population$AVG[as.integer(link_table$POPULATION_ROW)]
+df <- cbind(df, average = as.integer(link_table$AVG))
+
+# P(Shot | State) = P(State | Shot)*P(Shot)/P(State)
+p_state_given_shot <- df$count/df$average
+p_state <- df$average/population$AVG[population$NAME == "United States"]
+df <- cbind(df, p = p_state_given_shot*p_shot/p_state)
+
+ggplot(data = df) +
+  geom_bar(aes(x = reorder(state, -p), y = p), stat = "identity") +
+  labs(x = "State", y = "Probability", title = "Probability of Being Shot Given the State of Incident") + 
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
